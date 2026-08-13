@@ -403,3 +403,4 @@ with tabs[4]:
         "Con esas tres variables el modelo podrá aprender el tiempo siembra→cosecha y separar mejor efectos de lote, época y variedad."
     )
 
+
