@@ -213,9 +213,9 @@ with tab1:
 
     st.markdown("---")
 
-    # 2. Bloque de Comportamiento de la Curva Porcentual por Semana (Ej. 0.23, 0.33...)
+    # 2. Bloque de Comportamiento Integrado (Periodo + Semana 1, Semana 2, etc.)
     st.subheader(
-        f"📉 Comportamiento de la Curva de Producción Semanal ({veg_sel})"
+        f"📉 Curva Porcentual Desglosada por Semana de Cosecha ({veg_sel})"
     )
 
     row_c = df_curvas[df_curvas["Vegetal"] == veg_sel]
@@ -235,51 +235,47 @@ with tab1:
       factores = [v if v <= 1.0 else v / 100.0 for v in valores_pct]
       porcentajes = [f * 100 for f in factores]
 
+      # Construir un DataFrame donde cada fila sea un periodo (Actual y Histórico)
+      # compartiendo la curva de distribución porcentual semanal por cultivo
+      data_combinada = []
+      for idx, row in df_v.iterrows():
+        periodo_val = row["Periodo"]
+        reg = {"Periodo": periodo_val}
+        for s_col, p_val in zip(cols_sem, porcentajes):
+          if p_val > 0:  # Solo incluir semanas activas
+            reg[f"{s_col} (%)"] = f"{p_val:.2f}%"
+        data_combinada.append(reg)
+
+      df_integrado = pd.DataFrame(data_combinada)
+
+      st.markdown(
+          "**Vista cruzada por Periodo (`Actual (2025-2026)` / `Histórico"
+          " (<2025)`) y el porcentaje por semana de producción:**"
+      )
+      st.dataframe(df_integrado, use_container_width=True, hide_index=True)
+
+      # Gráfica de línea detallada
       df_curva_detalle = pd.DataFrame({
           "Semana de Cosecha": cols_sem,
-          "Factor Proporcional (Ej. 0.23)": [
-              f"{f:.4f}" if f > 0 else "0.0000" for f in factores
-          ],
-          "Porcentaje (%)": [f"{p:.2f}%" for p in porcentajes],
           "Valor Numérico %": porcentajes,
       })
-
       df_curva_activa = df_curva_detalle[
           df_curva_detalle["Valor Numérico %"] > 0
       ]
 
-      col_c1, col_c2 = st.columns([1, 1])
-
-      with col_c1:
-        st.markdown(
-            "**Distribución detallada por semana de cosecha:**"
-        )
-        st.dataframe(
-            df_curva_activa[[
-                "Semana de Cosecha",
-                "Factor Proporcional (Ej. 0.23)",
-                "Porcentaje (%)",
-            ]],
-            use_container_width=True,
-            hide_index=True,
-        )
-
-      with col_c2:
-        fig_line = px.line(
-            df_curva_activa,
-            x="Semana de Cosecha",
-            y="Valor Numérico %",
-            markers=True,
-            title=f"Tendencia de Cosecha Semanal - {veg_sel}",
-            text=[f"{v:.1f}%" for v in df_curva_activa["Valor Numérico %"]],
-        )
-        fig_line.update_traces(
-            textposition="top center", line=dict(color="#2E8B57", width=3)
-        )
-        fig_line.update_yaxes(
-            title_text="Porcentaje de Producción (%)"
-        )  # Corregido a update_yaxes
-        st.plotly_chart(fig_line, use_container_width=True)
+      fig_line = px.line(
+          df_curva_activa,
+          x="Semana de Cosecha",
+          y="Valor Numérico %",
+          markers=True,
+          title=f"Tendencia Porcentual de Cosecha Semanal - {veg_sel}",
+          text=[f"{v:.1f}%" for v in df_curva_activa["Valor Numérico %"]],
+      )
+      fig_line.update_traces(
+          textposition="top center", line=dict(color="#2E8B57", width=3)
+      )
+      fig_line.update_yaxes(title_text="Porcentaje de Producción (%)")
+      st.plotly_chart(fig_line, use_container_width=True)
     else:
       st.info(
           f"No se encontró curva porcentual detallada para el cultivo:"
@@ -381,7 +377,7 @@ with tab3:
             df_curvas["Vegetal"].str.contains(veg_sim, case=False, na=False)
         ]
 
-      if not row_curva.empty:
+      if not row_curva.rows_empty if hasattr(row_curva, 'rows_empty') else not row_curva.empty:
         cols_sem = [
             c
             for c in row_curva.columns
