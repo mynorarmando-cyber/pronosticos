@@ -45,37 +45,44 @@ def normalize_reference(s):
         "extrafino": "Fino",
     })
 
-def read_excel_data(file="Analisis final.xlsx"):
-    raw = pd.read_excel(file, sheet_name=0, header=None)
+def read_excel_data(file):
+    # Si file es un UploadedFile de Streamlit o una ruta, pd.read_excel lo maneja
+    raw = pd.read_excel(file, sheet_name="Cosecha Real", header=0)
+    
+    # La pestaña 'Cosecha Real' contiene los datos en formato tabular limpio o en columnas específicas.
+    # Usemos la lógica adaptada a la estructura real de tu archivo:
+    if "Finca" in raw.columns:
+        d = raw.copy()
+    else:
+        # Fallback a lectura por posición si las columnas difieren
+        raw_full = pd.read_excel(file, sheet_name="Cosecha Real", header=None)
+        left = raw_full.iloc[:, 1:14].copy()
+        left.columns = [
+            "Finca","Lote","Area","Ciclo","Codigo","Vegetal","Referencia",
+            "CantidadV","DuracionSC","Kilos","Semana","Año","Mes"
+        ]
+        d = left
 
-    # Tabla 6 (Histórico semanal)
-    left = raw.iloc[:, 1:14].copy()
-    left.columns = [
-        "Finca","Lote","Area","Ciclo","Codigo","Vegetal","Referencia",
-        "CantidadV","DuracionSC","Kilos","Semana","Año","Mes"
-    ]
-    left = left[left["Finca"].notna() & left["Lote"].notna() & left["Ciclo"].notna()]
-    left["Referencia"] = normalize_reference(left["Referencia"])
+    d = d[d["Finca"].notna() & d["Lote"].notna() & d["Ciclo"].notna()].copy()
+    if "Referencia" in d.columns:
+        d["Referencia"] = normalize_reference(d["Referencia"])
+    elif "Vegetal" in d.columns:
+        d["Referencia"] = normalize_reference(d["Vegetal"])
+        
     for c in ["Area","Ciclo","Codigo","CantidadV","DuracionSC","Kilos","Semana","Año"]:
-        left[c] = pd.to_numeric(left[c], errors="coerce")
-    left = left.dropna(subset=["Kilos","Semana","Año","Area"])
-
-    # Tabla 10 complementaria
-    right = raw.iloc[:, 15:26].copy()
-    right.columns = [
-        "Finca","Lote","Area","Ciclo","Vegetal","Referencia","CantidadV",
-        "DuracionSC","Total","Rendimiento","RendimientoReal"
-    ]
-    right = right[right["Finca"].notna() & right["Lote"].notna() & right["Ciclo"].notna()]
-    right["Referencia"] = normalize_reference(right["Referencia"])
-    for c in ["Area","Ciclo","CantidadV","DuracionSC","Total","Rendimiento","RendimientoReal"]:
-        right[c] = pd.to_numeric(right[c], errors="coerce")
-
-    return left, right
+        if c in d.columns:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+            
+    d = d.dropna(subset=["Kilos","Semana","Año","Area"])
+    return d
 
 def prepare_model(t6):
     d = t6.copy()
-    d["CantidadV"] = d["CantidadV"].fillna(1).clip(lower=1)
+    if "CantidadV" in d.columns:
+        d["CantidadV"] = d["CantidadV"].fillna(1).clip(lower=1)
+    else:
+        d["CantidadV"] = 1
+        
     d["AreaEfectiva"] = d["Area"] / d["CantidadV"]
     d["Semana"] = d["Semana"].astype(int)
     d["Año"] = d["Año"].astype(int)
@@ -138,10 +145,6 @@ def cycle_stats(cycles, vegetable=None):
     }
 
 def build_curve_comparative(d, vegetable):
-    """
-    Construye las curvas segmentadas por periodo (<25 vs 2025-2026) y la curva recomendada
-    tal como se solicitó en los requisitos de análisis temporal.
-    """
     x = d[d["Referencia"] == vegetable].copy()
     if x.empty:
         return pd.DataFrame()
@@ -155,7 +158,6 @@ def build_curve_comparative(d, vegetable):
     total = cyc.groupby(["Periodo","Finca","Lote","Ciclo","Referencia"])["Kilos"].transform("sum")
     cyc["Pct"] = cyc["Kilos"] / total.replace(0, np.nan)
 
-    # Consolidado por periodo y semana relativa
     out_periods = []
     for periodo, gp in cyc.groupby("Periodo"):
         for sw, g in gp.groupby("SemanaRelativa"):
@@ -163,7 +165,6 @@ def build_curve_comparative(d, vegetable):
             out_periods.append({"Periodo": periodo, "SemanaRelativa": int(sw), "Porcentaje": med})
     df_p = pd.DataFrame(out_periods)
     
-    # Pivoteamos para tener columnas <25 y 2025 y 2026
     pivot = df_p.pivot(index="SemanaRelativa", columns="Periodo", values="Porcentaje").reset_index()
     if "<25" not in pivot.columns:
         pivot["<25"] = 0.0
@@ -171,11 +172,7 @@ def build_curve_comparative(d, vegetable):
         pivot["2025 y 2026"] = 0.0
         
     pivot = pivot.fillna(0)
-    
-    # Curva recomendada (Ponderación 2025-2026 con mayor peso por cambio de duración, ej. brócoli de 4 a 6-7 semanas)
-    # Se da un 70% de peso a 2025 y 2026 y 30% a <25
     pivot["Recomendada"] = pivot["2025 y 2026"] * 0.70 + pivot["<25"] * 0.30
-    # Normalizar recomendada a suma 1.0
     s_rec = pivot["Recomendada"].sum()
     if s_rec > 0:
         pivot["Recomendada"] = pivot["Recomendada"] / s_rec
@@ -266,14 +263,14 @@ with st.sidebar:
 source = uploaded if uploaded is not None else "Analisis final.xlsx"
 
 try:
-    t6, t10 = read_excel_data(source)
+    t6 = read_excel_data(source)
     data, cycles = prepare_model(t6)
+    vegetables = sorted(data["Referencia"].dropna().unique().tolist())
+    st.success(f"Datos cargados con éxito: {len(data):,} registros y {len(cycles):,} ciclos agrícolas analizados.")
 except Exception as e:
-    st.error("No se encontró el archivo 'Analisis final.xlsx'. Por favor, súbelo usando el botón de la barra lateral.")
+    st.error(f"Error al leer el archivo de datos: {e}")
+    st.info("Por favor, verifica que el archivo 'Analisis final.xlsx' esté en la misma carpeta o súbelo usando el botón de la barra lateral.")
     st.stop()
-
-vegetables = sorted(data["Referencia"].dropna().unique().tolist())
-st.success(f"Datos cargados con éxito: {len(data):,} registros y {len(cycles):,} ciclos agrícolas analizados.")
 
 tabs = st.tabs([
     "📊 Dashboard Ejecutivo", 
@@ -310,7 +307,6 @@ with tabs[1]:
     if curve_comp.empty:
         st.warning("No hay suficientes datos para este vegetal.")
     else:
-        # Mostrar tabla resumen estilo pestaña necesidades
         st.markdown(f"**Comparativa de distribución porcentual de cosecha para: {veg_c}**")
         display_tbl = curve_comp.copy()
         for col in ["<25", "2025 y 2026", "Recomendada"]:
@@ -318,7 +314,6 @@ with tabs[1]:
                 display_tbl[col] = display_tbl[col].map(lambda x: f"{x:.1%}")
         st.dataframe(display_tbl.rename(columns={"SemanaRelativa": "Semana de Cosecha"}), use_container_width=True, hide_index=True)
 
-        # Gráfico comparativo
         fig_c = px.line(
             curve_comp.melt(id_vars=["SemanaRelativa"], value_vars=["<25", "2025 y 2026", "Recomendada"], 
                             var_name="Periodo / Modelo", value_name="Porcentaje"),
@@ -375,7 +370,6 @@ with tabs[3]:
     lotes_disponibles = sorted(data[data["Finca"] == finca_sel]["Lote"].dropna().unique())
     lote_sel = col_l2.selectbox("Lote", lotes_disponibles)
     
-    # Obtener área promedio del lote
     lote_data = data[(data["Finca"] == finca_sel) & (data["Lote"] == lote_sel)]
     default_area = float(lote_data["AreaEfectiva"].mean()) if not lote_data.empty else 1.0
     area_lote = col_l3.number_input("Área del Lote (ha)", min_value=0.01, value=default_area, step=0.1)
@@ -384,7 +378,6 @@ with tabs[3]:
     rend_plan = st.number_input("Rendimiento Plan (kg/ha)", min_value=100.0, value=10900.0, step=500.0)
     siembra_date = st.date_input("Fecha de Siembra / Inicio Cosecha", value=date.today())
 
-    # Generar tabla de plan
     curve_p = build_curve_comparative(data, veg_plan)
     if not curve_p.empty:
         plan_rows = []
@@ -403,13 +396,11 @@ with tabs[3]:
             })
         df_plan = pd.DataFrame(plan_rows)
         
-        # Mostrar resumen superior
         tot_plan_kilos = df_plan["Kilos Programados"].sum()
         a, b = st.columns(2)
         a.metric("Producción Total Programada", f"{tot_plan_kilos:,.0f} kg")
         b.metric("Duración del Ciclo Planificado", f"{len(df_plan)} semanas")
 
-        # Tabla formateada
         show_plan = df_plan.copy()
         show_plan["Curva Recomendada %"] = show_plan["Curva Recomendada %"].map(lambda x: f"{x:.1%}")
         show_plan["Kilos Programados"] = show_plan["Kilos Programados"].map(lambda x: f"{x:,.0f}")
@@ -435,3 +426,4 @@ with tabs[4]:
 
     st.markdown("**Resumen de Ciclos Analizados**")
     st.dataframe(cycles[["Finca", "Lote", "Ciclo", "Referencia", "Area", "TotalKilos", "Rendimiento", "DuracionReal", "AñoCosecha", "Periodo"]].head(50), use_container_width=True, hide_index=True)
+  
