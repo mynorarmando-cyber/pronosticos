@@ -139,7 +139,9 @@ with st.sidebar.form("form_nueva_cosecha"):
       "Código (Semana Relativa de Cosecha)", min_value=1, value=1, step=1
   )
   kilos_n = st.number_input("Kilos Cosechados", min_value=0.0, value=1200.0)
-  semana_n = st.number_input("Semana Calendario", min_value=1, max_value=52, value=30)
+  semana_n = st.number_input(
+      "Semana Calendario", min_value=1, max_value=52, value=30
+  )
   anio_n = st.number_input("Año", min_value=2025, max_value=2030, value=2026)
 
   btn_guardar = st.form_submit_button("💾 Guardar y Actualizar Modelo")
@@ -164,7 +166,6 @@ if btn_guardar:
       "Rendimiento_Semanal": kilos_n / area_n,
   }])
 
-  # Guardar en CSV local para persistencia inmediata
   if os.path.exists(ARCHIVO_NUEVOS_DATOS):
     df_existente = pd.read_csv(ARCHIVO_NUEVOS_DATOS)
     df_actualizado = pd.concat(
@@ -219,10 +220,12 @@ with tab1:
   st.plotly_chart(fig_d, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 2: CURVAS PORCENTUALES DINÁMICAS
+# TAB 2: CURVAS PORCENTUALES DINÁMICAS (TABLA PRIMERO, GRÁFICA AL FINAL)
 # -----------------------------------------------------------------------------
 with tab2:
-  st.header("📈 Curvas Porcentuales de Cosecha Ajustadas por Ciclo Real")
+  st.header(
+      "📈 Curvas Porcentuales de Cosecha (Actual vs Histórico por Semana)"
+  )
   veg_sel2 = st.selectbox("Seleccione Vegetal:", lista_veg, key="t2_v")
 
   df_v2 = df_base[df_base["Vegetal"] == veg_sel2].copy()
@@ -235,22 +238,39 @@ with tab2:
   tot_ciclo = df_v2.groupby(["Finca", "Lote", "Ciclo"])["Kilos"].transform(
       "sum"
   )
-  df_v2["Pct"] = (df_v2["Kilos"] / tot_ciclo) * 100
+  df_v2["Pct"] = (
+      df_v2["Kilos"] / tot_ciclo
+  ) * 100  # Convertir a porcentaje 0-100
 
   curva_plot = (
       df_v2.groupby(["Periodo", "Sem_Rel"])["Pct"].mean().reset_index()
   )
 
+  # Crear tabla pivote con Periodo en filas y las Semanas (1, 2, 3...) en columnas con sus porcentajes
+  pivot_curva = curva_plot.pivot(
+      index="Periodo", columns="Sem_Rel", values="Pct"
+  ).fillna(0)
+  pivot_curva.columns = [f"Semana {c} (%)" for c in pivot_curva.columns]
+
+  st.markdown(
+      "**Tabla Comparativa por Periodo (Filas: Periodos | Columnas: Porcentaje"
+      " por Semana):**"
+  )
+  st.dataframe(pivot_curva, use_container_width=True)
+
+  st.markdown("---")
+
+  # Gráfica colocada al final
   fig_c = px.line(
       curva_plot,
       x="Sem_Rel",
       y="Pct",
       color="Periodo",
       markers=True,
-      title=f"Curva de Distribución Semanal (% de Cosecha) - {veg_sel2}",
+      title=f"Gráfica de Distribución Semanal (% de Cosecha) - {veg_sel2}",
       labels={
           "Sem_Rel": "Semana de Cosecha en el Ciclo",
-          "Pct": "% del Total",
+          "Pct": "Porcentaje del Total (%)",
       },
   )
   st.plotly_chart(fig_c, use_container_width=True)
@@ -283,7 +303,6 @@ with tab3:
     )
     kilos_est_totales = area_plan * rend_prom
 
-    # Obtener curva porcentual de ese periodo
     df_p_curva = df_base[
         (df_base["Vegetal"] == veg_plan)
         & (df_base["Periodo"] == periodo_plan)
@@ -319,6 +338,15 @@ with tab3:
         f" **{kilos_est_totales:,.2f} Kilos Totales Proyectados**"
     )
 
+    st.markdown("**Tabla de Distribución Proyectada:**")
+    st.dataframe(
+        curva_res[
+            ["Sem_Rel", "Porcentaje (%)", "Kilos_Estimados"]
+        ].rename(columns={"Sem_Rel": "Semana de Cosecha"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+
     fig_proy = px.bar(
         curva_res,
         x="Sem_Rel",
@@ -332,9 +360,3 @@ with tab3:
         color_discrete_sequence=["#2E8B57"],
     )
     st.plotly_chart(fig_proy, use_container_width=True)
-
-    st.dataframe(
-        curva_res[["Sem_Rel", "Porcentaje (%)", "Kilos_Estimados"]],
-        use_container_width=True,
-        hide_index=True,
-    )
