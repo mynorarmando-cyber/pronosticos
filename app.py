@@ -1,4 +1,5 @@
 import os
+import unicodedata
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
@@ -6,7 +7,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-# 1. Configuración de la aplicación
+# 1. Configuración de la página
 st.set_page_config(
     page_title='CropPlanner - Plataforma Agrícola Integral',
     layout='wide',
@@ -16,24 +17,35 @@ st.set_page_config(
 st.title('🌾 CropPlanner: Análisis Comparativo y Simulador Agrícola')
 st.markdown(
     'Módulo de diagnóstico comparativo de curvas de producción (**General**,'
-    ' **< 2025** y **2025-2026**) e ingesta continua de nuevos datos.'
+    ' **< 2025** y **2025-2026**) e ingesta continua de datos.'
 )
 
 
-# 2. Carga y Procesamiento de Datos
+# Función auxiliar para limpiar nombres de columnas
+def limpiar_texto(texto):
+  if not isinstance(texto, str):
+    return str(texto)
+  texto = unicodedata.normalize('NFKD', texto)
+  texto = ''.join([c for c in texto if not unicodedata.combining(c)])
+  return texto.strip()
+
+
+# 2. Carga y Procesamiento Seguro de Datos
 @st.cache_data
 def cargar_base_datos():
-  # Cargar desde los archivos del proyecto
-  archivo_matriz = 'Matris recomendada.xlsx'
   archivo_hist = 'Herramienta_Integral_Analisis_Y_Pronostico_Cosechas.xlsx'
 
   if os.path.exists(archivo_hist):
     xls_h = pd.ExcelFile(archivo_hist)
     df_h = pd.read_excel(xls_h, sheet_name='Historico Real Semanal')
-    t6 = df_h.iloc[2:].copy()
-    t6.columns = df_h.iloc[1].values
 
-    for c in [
+    # Encabezados en la fila 1
+    t6 = df_h.iloc[2:].copy()
+    col_names = [limpiar_texto(col) for col in df_h.iloc[1].values]
+    t6.columns = col_names
+
+    # Estandarización de columnas numéricas clave
+    columnas_num = [
         'Area (Ha)',
         'Cantidad V',
         'Area Efectiva (Ha)',
@@ -44,31 +56,72 @@ def cargar_base_datos():
         'Ano',
         'Semana Corte (Ciclo)',
         'Rendimiento Real (Kg/Ha)',
-    ]:
-      t6[c] = pd.to_numeric(t6[c], errors='coerce')
+    ]
 
-    t6 = t6.dropna(subset=['Finca', 'Ciclo', 'Kilos', 'Referencia'])
-    tot_ciclo = t6.groupby(['Finca', 'Lote', 'Ciclo', 'Referencia'])[
-        'Kilos'
-    ].transform('sum')
-    t6['Pct_Cosecha_Semanal'] = (t6['Kilos'] / tot_ciclo) * 100
+    for col in columnas_num:
+      if col in t6.columns:
+        t6[col] = pd.to_numeric(t6[col], errors='coerce')
+
+    # Mapeo flexible de columnas esenciales
+    col_ref = 'Referencia' if 'Referencia' in t6.columns else 'Vegetal'
+    t6['Referencia'] = t6[col_ref] if col_ref in t6.columns else 'Sin Registro'
+
+    # Limpieza de nulos
+    t6 = t6.dropna(subset=['Kilos', 'Referencia', 'Ciclo'])
+
+    # Cálculo seguro de % de cosecha
+    if all(
+        c in t6.columns for c in ['Finca', 'Lote', 'Ciclo', 'Referencia', 'Kilos']
+    ):
+      tot_ciclo = t6.groupby(['Finca', 'Lote', 'Ciclo', 'Referencia'])[
+          'Kilos'
+      ].transform('sum')
+      t6['Pct_Cosecha_Semanal'] = np.where(
+          tot_ciclo > 0, (t6['Kilos'] / tot_ciclo) * 100, 0
+      )
+    else:
+      t6['Pct_Cosecha_Semanal'] = 0.0
+
+    return t6
   else:
-    t6 = pd.DataFrame()
-
-  return t6
+    # DataFrame por defecto si no encuentra el Excel
+    return pd.DataFrame(
+        columns=[
+            'Finca',
+            'Lote',
+            'Area (Ha)',
+            'Cantidad V',
+            'Area Efectiva (Ha)',
+            'Ciclo',
+            'Codigo',
+            'Referencia',
+            'Kilos',
+            'Semana Calendario',
+            'Ano',
+            'Semana Corte (Ciclo)',
+            'Rendimiento Real (Kg/Ha)',
+            'Pct_Cosecha_Semanal',
+        ]
+    )
 
 
 t6_data = cargar_base_datos()
 
-# 3. Formulario en la Barra Lateral para Registro Continuo de Datos Futuros
+# 3. Formulario Lateral
 st.sidebar.header('📝 Captura Cosecha Futura (2026+)')
 with st.sidebar.form('form_cosecha_futura'):
-  st.markdown('**Agregar Nuevo Corte Real**')
   finca_f = st.text_input('Finca', value='CH')
   lote_f = st.text_input('Lote', value='CH01')
   veg_f = st.selectbox(
       'Vegetal / Referencia',
-      ['Broccoli', 'Fino', 'Dulce', 'China', 'Esparrago', 'Grano', 'Zanahoria'],
+      [
+          'Broccoli',
+          'Ejote Fino',
+          'Ejote Dulce',
+          'Arveja China',
+          'Esparrago',
+          'Zanahoria',
+      ],
   )
   area_f = st.number_input('Área (Ha)', min_value=0.1, value=1.0, step=0.1)
   cant_v_f = st.number_input('Cantidad V', min_value=1, value=1, step=1)
@@ -78,7 +131,7 @@ with st.sidebar.form('form_cosecha_futura'):
       'Año', min_value=2025, max_value=2030, value=2026, step=1
   )
   semana_f = st.number_input(
-      'Semana Calendario (1-52)', min_value=1, max_value=52, value=10, step=1
+      'Semana Calendario', min_value=1, max_value=52, value=10, step=1
   )
   sem_corte_f = st.number_input(
       'Semana Corte (Ciclo)', min_value=1, max_value=20, value=1, step=1
@@ -88,274 +141,253 @@ with st.sidebar.form('form_cosecha_futura'):
   guardar = st.form_submit_button('💾 Guardar Cosecha')
 
 if guardar:
-  area_efectiva = area_f / cant_v_f
-  rend_real = kilos_f / area_efectiva if area_efectiva > 0 else 0
-  nuevo_registro = pd.DataFrame([{
+  area_ef = area_f / cant_v_f if cant_v_f > 0 else area_f
+  rend_r = kilos_f / area_ef if area_ef > 0 else 0
+  nuevo = pd.DataFrame([{
       'Finca': finca_f,
       'Lote': lote_f,
       'Area (Ha)': area_f,
       'Cantidad V': cant_v_f,
-      'Area Efectiva (Ha)': area_efectiva,
+      'Area Efectiva (Ha)': area_ef,
       'Ciclo': ciclo_f,
       'Codigo': codigo_f,
-      'Vegetal': veg_f,
       'Referencia': veg_f,
       'Kilos': kilos_f,
       'Semana Calendario': semana_f,
       'Ano': ano_f,
-      'Mes': 'N/A',
       'Semana Corte (Ciclo)': sem_corte_f,
-      'Rendimiento Real (Kg/Ha)': rend_real,
+      'Rendimiento Real (Kg/Ha)': rend_r,
+      'Pct_Cosecha_Semanal': 0.0,
   }])
-  t6_data = pd.concat([t6_data, nuevo_registro], ignore_index=True)
-  st.sidebar.success('✅ Registro guardado exitosamente.')
+  t6_data = pd.concat([t6_data, nuevo], ignore_index=True)
+  st.sidebar.success('✅ Registro guardado.')
 
-# 4. Estructura Principal en Pestañas
+# 4. Pestañas de Navegación
 tab1, tab2, tab3 = st.tabs([
-    '📊 Comportamiento Comparativo por Vegetal',
-    '📈 Curvas Porcentuales de Producción',
-    '🚀 Simulador de Pronósticos Futuros',
+    '📊 Comportamiento Comparativo',
+    '📈 Curvas Porcentuales',
+    '🚀 Simulador de Pronósticos',
 ])
 
 # -----------------------------------------------------------------------------
-# TAB 1: COMPORTAMIENTO COMPARATIVO GENERAL VS <2025 VS 2025-2026
+# TAB 1: COMPORTAMIENTO COMPARATIVO
 # -----------------------------------------------------------------------------
 with tab1:
-  st.header('📊 Comportamiento Comparativo y Duración Real por Cultivo')
-  st.markdown(
-      'Comparativa de Rendimientos Medios y Duración en Semanas entre los 3'
-      ' periodos requeridos.'
-  )
+  st.header('📊 Comportamiento Comparativo por Cultivo')
 
-  if not t6_data.empty:
-    veg_sel = st.selectbox(
-        'Selecciona Vegetal para Inspeccionar:',
-        sorted(t6_data['Referencia'].dropna().unique()),
-    )
-
-    t6_veg = t6_data[t6_data['Referencia'] == veg_sel].copy()
-
-    # Asignación de periodos
-    t6_veg_hist = t6_veg[t6_veg['Ano'] < 2025]
-    t6_veg_act = t6_veg[t6_veg['Ano'] >= 2025]
-
-    # Cálculos por ciclo
-    def calcular_resumen_ciclos(df_sub):
-      if df_sub.empty:
-        return {'Ciclos': 0, 'Duracion_Prom': 0.0, 'Rend_Prom': 0.0}
-      ciclos = df_sub.groupby(['Finca', 'Lote', 'Ciclo']).agg(
-          Kilos_Tot=('Kilos', 'sum'),
-          Area_Ef=('Area Efectiva (Ha)', 'first'),
-          Duracion=('Semana Corte (Ciclo)', 'max'),
-      )
-      ciclos['Rend_KgHa'] = ciclos['Kilos_Tot'] / ciclos['Area_Ef']
-      return {
-          'Ciclos': len(ciclos),
-          'Duracion_Prom': ciclos['Duracion'].mean(),
-          'Rend_Prom': ciclos['Rend_KgHa'].mean(),
-      }
-
-    res_gen = calcular_resumen_ciclos(t6_veg)
-    res_hist = calcular_resumen_ciclos(t6_veg_hist)
-    res_act = calcular_resumen_ciclos(t6_veg_act)
-
-    # Mostrar Tabla Resumen
-    df_comp_resumen = pd.DataFrame([
-        {
-            'Periodo': 'Comportamiento General (Promedio Histórico Total)',
-            'Ciclos Totales': res_gen['Ciclos'],
-            'Duración Promedio (Semanas)': round(res_gen['Duracion_Prom'], 2),
-            'Rendimiento Promedio (Kg/Ha)': round(res_gen['Rend_Prom'], 1),
-        },
-        {
-            'Periodo': 'Histórico (< 2025)',
-            'Ciclos Totales': res_hist['Ciclos'],
-            'Duración Promedio (Semanas)': round(res_hist['Duracion_Prom'], 2),
-            'Rendimiento Promedio (Kg/Ha)': round(res_hist['Rend_Prom'], 1),
-        },
-        {
-            'Periodo': 'Comportamiento Actual (2025 - 2026+)',
-            'Ciclos Totales': res_act['Ciclos'],
-            'Duración Promedio (Semanas)': round(res_act['Duracion_Prom'], 2),
-            'Rendimiento Promedio (Kg/Ha)': round(res_act['Rend_Prom'], 1),
-        },
+  if not t6_data.empty and 'Referencia' in t6_data.columns:
+    lista_veg = sorted([
+        v for v in t6_data['Referencia'].dropna().unique() if str(v).strip()
     ])
+    if lista_veg:
+      veg_sel = st.selectbox(
+          'Selecciona Vegetal:', lista_veg, key='sb_tab1_veg'
+      )
+      t6_veg = t6_data[t6_data['Referencia'] == veg_sel].copy()
 
-    st.subheader(f'📋 Tabla Resumen Comparativa: {veg_sel}')
-    st.dataframe(df_comp_resumen, use_container_width=True)
+      def obtener_metricas(df_sub):
+        if df_sub.empty:
+          return 0, 0.0, 0.0
+        cols_req = [
+            'Finca',
+            'Lote',
+            'Ciclo',
+            'Kilos',
+            'Area Efectiva (Ha)',
+            'Semana Corte (Ciclo)',
+        ]
+        if not all(c in df_sub.columns for c in cols_req):
+          return 0, 0.0, 0.0
 
-    # Gráfico de Barras de Rendimiento Comparativo
-    fig_rend_comp = px.bar(
-        df_comp_resumen,
-        x='Periodo',
-        y='Rendimiento Promedio (Kg/Ha)',
-        color='Periodo',
-        text_auto='.1f',
-        title=f'Comparativa de Rendimiento (Kg/Ha) por Periodo - {veg_sel}',
-        color_discrete_sequence=['#2E8B57', '#4682B4', '#E67E22'],
+        ciclos = df_sub.groupby(['Finca', 'Lote', 'Ciclo']).agg(
+            Kilos_Tot=('Kilos', 'sum'),
+            Area_Ef=('Area Efectiva (Ha)', 'first'),
+            Duracion=('Semana Corte (Ciclo)', 'max'),
+        )
+        ciclos['Rend'] = np.where(
+            ciclos['Area_Ef'] > 0, ciclos['Kilos_Tot'] / ciclos['Area_Ef'], 0
+        )
+        return (
+            len(ciclos),
+            ciclos['Duracion'].mean() if not ciclos.empty else 0.0,
+            ciclos['Rend'].mean() if not ciclos.empty else 0.0,
+        )
+
+      c_gen, d_gen, r_gen = obtener_metricas(t6_veg)
+      c_hist, d_hist, r_hist = obtener_metricas(
+          t6_veg[t6_veg['Ano'] < 2025] if 'Ano' in t6_veg.columns else pd.DataFrame()
+      )
+      c_act, d_act, r_act = obtener_metricas(
+          t6_veg[t6_veg['Ano'] >= 2025] if 'Ano' in t6_veg.columns else pd.DataFrame()
+      )
+
+      df_resumen = pd.DataFrame([
+          {
+              'Periodo': 'Comportamiento General',
+              'Ciclos Totales': c_gen,
+              'Duración Promedio (Sem)': round(d_gen, 2),
+              'Rendimiento Promedio (Kg/Ha)': round(r_gen, 1),
+          },
+          {
+              'Periodo': 'Histórico (< 2025)',
+              'Ciclos Totales': c_hist,
+              'Duración Promedio (Sem)': round(d_hist, 2),
+              'Rendimiento Promedio (Kg/Ha)': round(r_hist, 1),
+          },
+          {
+              'Periodo': 'Actual (2025-2026+)',
+              'Ciclos Totales': c_act,
+              'Duración Promedio (Sem)': round(d_act, 2),
+              'Rendimiento Promedio (Kg/Ha)': round(r_act, 1),
+          },
+      ])
+
+      st.dataframe(df_resumen, use_container_width=True)
+
+      fig_b = px.bar(
+          df_resumen,
+          x='Periodo',
+          y='Rendimiento Promedio (Kg/Ha)',
+          color='Periodo',
+          text_auto='.1f',
+          title=f'Rendimiento Promedio - {veg_sel}',
+      )
+      st.plotly_chart(fig_b, use_container_width=True)
+  else:
+    st.warning(
+        'No se encontraron datos válidos en el archivo Excel cargado.'
     )
-    st.plotly_chart(fig_rend_comp, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 2: CURVAS DE DISTRIBUCIÓN PORCENTUAL SEMANAL
+# TAB 2: CURVAS DE DISTRIBUCIÓN PORCENTUAL
 # -----------------------------------------------------------------------------
 with tab2:
-  st.header('📈 Curvas de Distribución Porcentual Semanal (% Cosechado)')
-  st.markdown(
-      'Evaluación de cómo se distribuye la cosecha semana a semana'
-      ' comparando los tres periodos.'
-  )
+  st.header('📈 Curvas Porcentuales de Producción Semanal')
 
-  if not t6_data.empty:
-    # Recalcular % semanal por ciclo
-    totales_ciclo = t6_veg.groupby(['Finca', 'Lote', 'Ciclo'])[
-        'Kilos'
-    ].transform('sum')
-    t6_veg['Pct_Cosecha'] = (t6_veg['Kilos'] / totales_ciclo) * 100
+  if not t6_data.empty and 'Referencia' in t6_data.columns:
+    veg_sel2 = st.selectbox(
+        'Selecciona Vegetal para Curvas:', lista_veg, key='sb_tab2_veg'
+    )
+    t6_v2 = t6_data[t6_data['Referencia'] == veg_sel2].copy()
 
-    curva_gen = (
-        t6_veg.groupby('Semana Corte (Ciclo)')['Pct_Cosecha']
-        .mean()
-        .reset_index()
-    )
-    curva_hist = (
-        t6_veg[t6_veg['Ano'] < 2025]
-        .groupby('Semana Corte (Ciclo)')['Pct_Cosecha']
-        .mean()
-        .reset_index()
-    )
-    curva_act = (
-        t6_veg[t6_veg['Ano'] >= 2025]
-        .groupby('Semana Corte (Ciclo)')['Pct_Cosecha']
-        .mean()
-        .reset_index()
-    )
+    def get_curva(df_sub):
+      if (
+          df_sub.empty
+          or 'Semana Corte (Ciclo)' not in df_sub.columns
+          or 'Pct_Cosecha_Semanal' not in df_sub.columns
+      ):
+        return pd.DataFrame(columns=['Semana Corte (Ciclo)', 'Pct'])
+      res = (
+          df_sub.groupby('Semana Corte (Ciclo)')['Pct_Cosecha_Semanal']
+          .mean()
+          .reset_index()
+      )
+      res.columns = ['Semana Corte (Ciclo)', 'Pct']
+      return res
 
-    fig_curvas_comp = go.Figure()
-    fig_curvas_comp.add_trace(
-        go.Scatter(
-            x=curva_gen['Semana Corte (Ciclo)'],
-            y=curva_gen['Pct_Cosecha'],
-            mode='lines+markers',
-            name='General Promedio',
-            line=dict(color='#2E8B57', width=3),
-        )
+    cg = get_curva(t6_v2)
+    ch = get_curva(
+        t6_v2[t6_v2['Ano'] < 2025] if 'Ano' in t6_v2.columns else pd.DataFrame()
     )
-    fig_curvas_comp.add_trace(
-        go.Scatter(
-            x=curva_hist['Semana Corte (Ciclo)'],
-            y=curva_hist['Pct_Cosecha'],
-            mode='lines+markers',
-            name='Histórico (< 2025)',
-            line=dict(color='#4682B4', dash='dash'),
-        )
-    )
-    fig_curvas_comp.add_trace(
-        go.Scatter(
-            x=curva_act['Semana Corte (Ciclo)'],
-            y=curva_act['Pct_Cosecha'],
-            mode='lines+markers',
-            name='Actual (2025 - 2026+)',
-            line=dict(color='#E67E22', width=3),
-        )
+    ca = get_curva(
+        t6_v2[t6_v2['Ano'] >= 2025] if 'Ano' in t6_v2.columns else pd.DataFrame()
     )
 
-    fig_curvas_comp.update_layout(
-        title=f'Curva de Producción Porcentual - {veg_sel}',
-        xaxis_title='Semana Relativa de Corte (Semana 1, 2, 3...)',
-        yaxis_title='% del Total Cosechado',
-        template='plotly_white',
-    )
-    st.plotly_chart(fig_curvas_comp, use_container_width=True)
+    fig_c = go.Figure()
+    if not cg.empty:
+      fig_c.add_trace(
+          go.Scatter(
+              x=cg['Semana Corte (Ciclo)'],
+              y=cg['Pct'],
+              mode='lines+markers',
+              name='General',
+          )
+      )
+    if not ch.empty:
+      fig_c.add_trace(
+          go.Scatter(
+              x=ch['Semana Corte (Ciclo)'],
+              y=ch['Pct'],
+              mode='lines+markers',
+              name='< 2025',
+              line=dict(dash='dash'),
+          )
+      )
+    if not ca.empty:
+      fig_c.add_trace(
+          go.Scatter(
+              x=ca['Semana Corte (Ciclo)'],
+              y=ca['Pct'],
+              mode='lines+markers',
+              name='2025-2026+',
+          )
+      )
 
-    # Tabla Unificada de Porcentajes
-    df_curva_tab = pd.merge(
-        curva_gen,
-        curva_hist,
-        on='Semana Corte (Ciclo)',
-        how='outer',
-        suffixes=(' General', ' <2025'),
+    fig_c.update_layout(
+        title=f'Distribución Semanal - {veg_sel2}',
+        xaxis_title='Semana Relativa de Corte',
+        yaxis_title='% Cosechado',
     )
-    df_curva_tab = pd.merge(
-        df_curva_tab,
-        curva_act,
-        on='Semana Corte (Ciclo)',
-        how='outer',
-    ).rename(columns={'Pct_Cosecha': 'Pct 2025-2026'})
-    df_curva_tab = df_curva_tab.sort_values(
-        by='Semana Corte (Ciclo)'
-    ).fillna(0)
-
-    st.subheader('📋 Porcentajes Semanales por Periodo')
-    st.dataframe(df_curva_tab, use_container_width=True)
+    st.plotly_chart(fig_c, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 3: SIMULADOR DE PRONÓSTICOS FUTUROS
+# TAB 3: SIMULADOR
 # -----------------------------------------------------------------------------
 with tab3:
-  st.header('🚀 Proyección Futura de Producción')
+  st.header('🚀 Simulador de Pronósticos Futuros')
 
-  col_s1, col_s2, col_s3 = st.columns(3)
-  veg_sim = col_s1.selectbox(
-      'Vegetal a Planificar:',
-      sorted(t6_data['Referencia'].dropna().unique()),
-      key='sim_v',
-  )
-  area_sim = col_s2.number_input(
-      'Área a Sembrar (Hectáreas):',
-      min_value=0.1,
-      max_value=500.0,
-      value=5.0,
-  )
-  modelo_curva = col_s3.radio(
-      'Curva Base a Aplicar:',
-      ['Comportamiento Actual (2025-2026)', 'Histórico (<2025)', 'General'],
-  )
-
-  if st.button('🎯 Proyectar Cosecha'):
-    t6_sim = t6_data[t6_data['Referencia'] == veg_sim]
-
-    if modelo_curva == 'Comportamiento Actual (2025-2026)':
-      sub = t6_sim[t6_sim['Ano'] >= 2025]
-      if sub.empty:
-        sub = t6_sim
-    elif modelo_curva == 'Histórico (<2025)':
-      sub = t6_sim[t6_sim['Ano'] < 2025]
-    else:
-      sub = t6_sim
-
-    curva_p = (
-        sub.groupby('Semana Corte (Ciclo)')['Pct_Cosecha_Semanal']
-        .mean()
-        .reset_index()
-    )
-    curva_p['Factor'] = (
-        curva_p['Pct_Cosecha_Semanal'] / curva_p['Pct_Cosecha_Semanal'].sum()
+  if not t6_data.empty and 'Referencia' in t6_data.columns:
+    c1, c2, c3 = st.columns(3)
+    v_sim = c1.selectbox('Vegetal:', lista_veg, key='sb_sim')
+    a_sim = c2.number_input('Área (Ha):', min_value=0.1, value=5.0)
+    mod_sim = c3.radio(
+        'Modelo:',
+        ['Comportamiento Actual (2025-2026)', 'Histórico (<2025)', 'General'],
     )
 
-    # Rendimiento promedio por ciclo
-    cic_sub = sub.groupby(['Finca', 'Lote', 'Ciclo']).agg(
-        K=('Kilos', 'sum'), A=('Area Efectiva (Ha)', 'first')
-    )
-    rend_base = (cic_sub['K'] / cic_sub['A']).mean()
+    if st.button('🎯 Calcular Proyección'):
+      sub_s = t6_data[t6_data['Referencia'] == v_sim]
 
-    kilos_totales_est = area_sim * rend_base
+      if mod_sim == 'Comportamiento Actual (2025-2026)':
+        sub_s = sub_s[sub_s['Ano'] >= 2025]
+      elif mod_sim == 'Histórico (<2025)':
+        sub_s = sub_s[sub_s['Ano'] < 2025]
 
-    curva_p['Kilos Proyectados'] = curva_p['Factor'] * kilos_totales_est
+      if sub_s.empty:
+        sub_s = t6_data[t6_data['Referencia'] == v_sim]
 
-    st.success(
-        f'Proyección Total Estimada para {area_sim} Ha de {veg_sim}:'
-        f' **{kilos_totales_est:,.1f} Kg**'
-    )
+      if not sub_s.empty and 'Pct_Cosecha_Semanal' in sub_s.columns:
+        curva_sim = (
+            sub_s.groupby('Semana Corte (Ciclo)')['Pct_Cosecha_Semanal']
+            .mean()
+            .reset_index()
+        )
+        suma_pct = curva_sim['Pct_Cosecha_Semanal'].sum()
+        curva_sim['Factor'] = (
+            curva_sim['Pct_Cosecha_Semanal'] / suma_pct if suma_pct > 0 else 0
+        )
 
-    fig_sim = px.bar(
-        curva_p,
-        x='Semana Corte (Ciclo)',
-        y='Kilos Proyectados',
-        text_auto='.1f',
-        title=f'Distribución Semanal Estimada ({modelo_curva})',
-        color_discrete_sequence=['#2E8B57'],
-    )
-    st.plotly_chart(fig_sim, use_container_width=True)
+        ciclos_s = sub_s.groupby(['Finca', 'Lote', 'Ciclo']).agg(
+            K=('Kilos', 'sum'), A=('Area Efectiva (Ha)', 'first')
+        )
+        rend_prom = (
+            (ciclos_s['K'] / ciclos_s['A']).mean() if not ciclos_s.empty else 0
+        )
 
-    st.dataframe(curva_p, use_container_width=True)
+        kilos_est = a_sim * rend_prom
+        curva_sim['Kilos Proyectados'] = curva_sim['Factor'] * kilos_est
+
+        st.success(
+            f'Estimación Total para {a_sim} Ha de {v_sim}:'
+            f' **{kilos_est:,.1f} Kg**'
+        )
+
+        fig_sim_b = px.bar(
+            curva_sim,
+            x='Semana Corte (Ciclo)',
+            y='Kilos Proyectados',
+            text_auto='.1f',
+            title=f'Proyección Semanal - {v_sim}',
+        )
+        st.plotly_chart(fig_sim_b, use_container_width=True)
+        st.dataframe(curva_sim, use_container_width=True)
