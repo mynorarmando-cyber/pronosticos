@@ -38,7 +38,6 @@ def recency_weight(year, max_year):
 
 def normalize_reference(s):
     s = s.astype(str).str.strip()
-    # Unificación de Fino y Extrafino
     return s.replace({
         "Extrafino": "Fino",
         "EXTRAFINO": "Fino",
@@ -46,35 +45,26 @@ def normalize_reference(s):
     })
 
 def read_excel_data(file):
-    # Si file es un UploadedFile de Streamlit o una ruta, pd.read_excel lo maneja
-    raw = pd.read_excel(file, sheet_name="Cosecha Real", header=0)
+    raw_full = pd.read_excel(file, sheet_name="Cosecha Real", header=None)
+    left = raw_full.iloc[:, 1:14].copy()
+    left.columns = [
+        "Finca","Lote","Area","Ciclo","Codigo","Vegetal","Referencia",
+        "CantidadV","DuracionSC","Kilos","Semana","Año","Mes"
+    ]
+    # Filtrar filas vacías o la fila de cabecera repetida
+    left = left[left["Finca"].notna() & (left["Finca"] != "Finca")].copy()
     
-    # La pestaña 'Cosecha Real' contiene los datos en formato tabular limpio o en columnas específicas.
-    # Usemos la lógica adaptada a la estructura real de tu archivo:
-    if "Finca" in raw.columns:
-        d = raw.copy()
-    else:
-        # Fallback a lectura por posición si las columnas difieren
-        raw_full = pd.read_excel(file, sheet_name="Cosecha Real", header=None)
-        left = raw_full.iloc[:, 1:14].copy()
-        left.columns = [
-            "Finca","Lote","Area","Ciclo","Codigo","Vegetal","Referencia",
-            "CantidadV","DuracionSC","Kilos","Semana","Año","Mes"
-        ]
-        d = left
-
-    d = d[d["Finca"].notna() & d["Lote"].notna() & d["Ciclo"].notna()].copy()
-    if "Referencia" in d.columns:
-        d["Referencia"] = normalize_reference(d["Referencia"])
-    elif "Vegetal" in d.columns:
-        d["Referencia"] = normalize_reference(d["Vegetal"])
+    if "Referencia" in left.columns:
+        left["Referencia"] = normalize_reference(left["Referencia"])
+    elif "Vegetal" in left.columns:
+        left["Referencia"] = normalize_reference(left["Vegetal"])
         
     for c in ["Area","Ciclo","Codigo","CantidadV","DuracionSC","Kilos","Semana","Año"]:
-        if c in d.columns:
-            d[c] = pd.to_numeric(d[c], errors="coerce")
+        if c in left.columns:
+            left[c] = pd.to_numeric(left[c], errors="coerce")
             
-    d = d.dropna(subset=["Kilos","Semana","Año","Area"])
-    return d
+    left = left.dropna(subset=["Kilos","Semana","Año","Area"])
+    return left
 
 def prepare_model(t6):
     d = t6.copy()
@@ -84,10 +74,11 @@ def prepare_model(t6):
         d["CantidadV"] = 1
         
     d["AreaEfectiva"] = d["Area"] / d["CantidadV"]
-    d["Semana"] = d["Semana"].astype(int)
-    d["Año"] = d["Año"].astype(int)
+    d["Semana"] = d["Semana"].astype("Int64")
+    d["Año"] = d["Año"].astype("Int64")
 
-    # Fecha de lunes de la semana ISO
+    # Fecha de lunes de la semana ISO (filtrando nulos)
+    d = d.dropna(subset=["Semana", "Año"])
     d["SemanaInicio"] = pd.to_datetime(
         d["Año"].astype(str) + "-W" + d["Semana"].astype(str).str.zfill(2) + "-1",
         format="%G-W%V-%u",
@@ -121,8 +112,8 @@ def prepare_model(t6):
     ).round().astype(int)
 
     max_year = int(d["Año"].max())
-    cycles["PesoRecencia"] = cycles["AñoCosecha"].apply(lambda y: recency_weight(y, max_year))
-    cycles["Periodo"] = cycles["AñoCosecha"].apply(lambda y: "2025 y 2026" if y >= 2025 else "<25")
+    cycles["PesoRecencia"] = cycles["AñoCosecha"].apply(lambda y: recency_weight(int(y), max_year))
+    cycles["Periodo"] = cycles["AñoCosecha"].apply(lambda y: "2025 y 2026" if int(y) >= 2025 else "<25")
 
     return d, cycles
 
@@ -149,7 +140,7 @@ def build_curve_comparative(d, vegetable):
     if x.empty:
         return pd.DataFrame()
     
-    x["Periodo"] = x["Año"].apply(lambda y: "2025 y 2026" if y >= 2025 else "<25")
+    x["Periodo"] = x["Año"].apply(lambda y: "2025 y 2026" if int(y) >= 2025 else "<25")
     
     cyc = (
         x.groupby(["Periodo","Finca","Lote","Ciclo","Referencia","SemanaRelativa"], as_index=False)
@@ -190,7 +181,7 @@ def seasonality(d, vegetable):
     )
     weekly["KgHa"] = weekly["Kilos"] / weekly["Area"].replace(0, np.nan)
     max_year = int(x["Año"].max())
-    weekly["Peso"] = weekly["Año"].apply(lambda y: recency_weight(y, max_year))
+    weekly["Peso"] = weekly["Año"].apply(lambda y: recency_weight(int(y), max_year))
     base = np.average(weekly["KgHa"].dropna(), weights=weekly.loc[weekly["KgHa"].notna(),"Peso"])
     rows = []
     for wk, g in weekly.groupby("Semana"):
@@ -426,4 +417,4 @@ with tabs[4]:
 
     st.markdown("**Resumen de Ciclos Analizados**")
     st.dataframe(cycles[["Finca", "Lote", "Ciclo", "Referencia", "Area", "TotalKilos", "Rendimiento", "DuracionReal", "AñoCosecha", "Periodo"]].head(50), use_container_width=True, hide_index=True)
-  
+   
