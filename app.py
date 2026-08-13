@@ -10,9 +10,6 @@ st.set_page_config(page_title="AgroForecast | Modelo y Planificador Agrícola", 
 # ------------------------------------------------------------
 # 1. Utilidades y Funciones de Procesamiento de Datos
 # ------------------------------------------------------------
-def clean_name(x):
-    return str(x).strip() if pd.notna(x) else ""
-
 def weighted_quantile(values, quantile, weights=None):
     v = np.asarray(values, dtype=float)
     mask = np.isfinite(v)
@@ -45,14 +42,21 @@ def normalize_reference(s):
     })
 
 def read_excel_data(file):
-    raw_full = pd.read_excel(file, sheet_name="Cosecha Real", header=None)
+    # Lectura robusta manejando rutas locales o archivos subidos en memoria
+    if hasattr(file, "read"):
+        raw_full = pd.read_excel(file, sheet_name="Cosecha Real", header=None)
+    else:
+        raw_full = pd.read_excel(file, sheet_name="Cosecha Real", header=None)
+        
     left = raw_full.iloc[:, 1:14].copy()
     left.columns = [
         "Finca","Lote","Area","Ciclo","Codigo","Vegetal","Referencia",
         "CantidadV","DuracionSC","Kilos","Semana","Año","Mes"
     ]
-    # Filtrar filas vacías o la fila de cabecera repetida
-    left = left[left["Finca"].notna() & (left["Finca"] != "Finca")].copy()
+    
+    # Limpiar filas vacías y la fila de cabecera repetida
+    left = left.dropna(subset=["Finca"]).copy()
+    left = left[left["Finca"] != "Finca"].copy()
     
     if "Referencia" in left.columns:
         left["Referencia"] = normalize_reference(left["Referencia"])
@@ -74,11 +78,14 @@ def prepare_model(t6):
         d["CantidadV"] = 1
         
     d["AreaEfectiva"] = d["Area"] / d["CantidadV"]
-    d["Semana"] = d["Semana"].astype("Int64")
-    d["Año"] = d["Año"].astype("Int64")
+    
+    # Conversión segura a Int64 para evitar errores con nulos
+    d["Semana"] = pd.to_numeric(d["Semana"], errors="coerce").astype("Int64")
+    d["Año"] = pd.to_numeric(d["Año"], errors="coerce").astype("Int64")
 
-    # Fecha de lunes de la semana ISO (filtrando nulos)
     d = d.dropna(subset=["Semana", "Año"])
+    
+    # Fecha de lunes de la semana ISO
     d["SemanaInicio"] = pd.to_datetime(
         d["Año"].astype(str) + "-W" + d["Semana"].astype(str).str.zfill(2) + "-1",
         format="%G-W%V-%u",
