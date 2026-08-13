@@ -42,12 +42,28 @@ def normalize_reference(s):
     })
 
 def read_excel_data(file):
-    # Lectura robusta manejando rutas locales o archivos subidos en memoria
-    if hasattr(file, "read"):
-        raw_full = pd.read_excel(file, sheet_name="Cosecha Real", header=None)
-    else:
-        raw_full = pd.read_excel(file, sheet_name="Cosecha Real", header=None)
-        
+    # Identificar las hojas disponibles de forma segura
+    xls = pd.ExcelFile(file)
+    sheets = xls.sheet_names
+    
+    # Buscar la hoja 'Cosecha Real' o una alternativa similar sin distinguir mayúsculas
+    target_sheet = None
+    for sh in sheets:
+        sh_clean = sh.strip().lower()
+        if "cosecha" in sh_clean and "real" in sh_clean:
+            target_sheet = sh
+            break
+    if not target_sheet:
+        # Si no encuentra coincidencia exacta, toma la que contenga 'cosecha' o la última/primera disponible
+        for sh in sheets:
+            if "cosecha" in sh.lower():
+                target_sheet = sh
+                break
+    if not target_sheet:
+        target_sheet = sheets[0] # Respaldo por defecto
+
+    raw_full = pd.read_excel(file, sheet_name=target_sheet, header=None)
+    
     left = raw_full.iloc[:, 1:14].copy()
     left.columns = [
         "Finca","Lote","Area","Ciclo","Codigo","Vegetal","Referencia",
@@ -424,4 +440,3 @@ with tabs[4]:
 
     st.markdown("**Resumen de Ciclos Analizados**")
     st.dataframe(cycles[["Finca", "Lote", "Ciclo", "Referencia", "Area", "TotalKilos", "Rendimiento", "DuracionReal", "AñoCosecha", "Periodo"]].head(50), use_container_width=True, hide_index=True)
-   
