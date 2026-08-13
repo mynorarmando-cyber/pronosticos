@@ -145,25 +145,28 @@ if guardar:
 
 # 4. Navegación Principal por Pestañas
 tab1, tab2, tab3 = st.tabs([
-    "📊 Comportamiento Comparativo por Cultivo",
-    "📈 Curvas Porcentuales de Producción",
+    "📊 Comportamiento y Curva por Cultivo",
+    "📈 Curvas Globales de Producción",
     "🚀 Simulador de Pronósticos Futuros",
 ])
 
 # -----------------------------------------------------------------------------
-# TAB 1: COMPORTAMIENTO COMPARATIVO
+# TAB 1: COMPORTAMIENTO Y CURVA POR CULTIVO
 # -----------------------------------------------------------------------------
 with tab1:
-  st.header("📊 Comportamiento Comparativo y Duración Real por Cultivo")
+  st.header(
+      "📊 Comportamiento, Duración y Curva Porcentual Semanal por Cultivo"
+  )
 
   if not df_comp.empty and "Vegetal" in df_comp.columns:
     lista_vegetales = sorted([
         v for v in df_comp["Vegetal"].dropna().unique() if str(v).strip()
     ])
     veg_sel = st.selectbox(
-        "Selecciona Vegetal para Inspeccionar:", lista_vegetales
+        "Selecciona Vegetal para Inspeccionar:", lista_vegetales, key="tab1_veg"
     )
 
+    # 1. Bloque de Rendimientos y Ciclos
     df_v = df_comp[df_comp["Vegetal"] == veg_sel].copy()
 
     if not st.session_state.cosechas_nuevas.empty:
@@ -185,7 +188,7 @@ with tab1:
         }])
         df_v = pd.concat([df_v, filas_nuevas], ignore_index=True)
 
-    st.subheader(f"📋 Resumen de Desempeño: {veg_sel}")
+    st.subheader(f"📋 Resumen de Desempeño Histórico y Actual: {veg_sel}")
     st.dataframe(
         df_v[[
             "Periodo",
@@ -208,8 +211,84 @@ with tab1:
     )
     st.plotly_chart(fig_b, use_container_width=True)
 
+    st.markdown("---")
+
+    # 2. Bloque de Comportamiento de la Curva Porcentual por Semana (Ej. 0.23, 0.33...)
+    st.subheader(
+        f"📉 Comportamiento de la Curva de Producción Semanal ({veg_sel})"
+    )
+
+    row_c = df_curvas[df_curvas["Vegetal"] == veg_sel]
+    if row_c.empty:
+      # Búsqueda flexible si el nombre varía ligeramente (ej. Extrafino/Fino)
+      row_c = df_curvas[
+          df_curvas["Vegetal"].str.contains(veg_sel, case=False, na=False)
+      ]
+
+    if not row_c.empty:
+      cols_sem = [
+          c
+          for c in row_c.columns
+          if "Semana" in str(c) and "Total" not in str(c)
+      ]
+      valores_pct = row_c[cols_sem].values[0]
+
+      # Normalizar a factor (0 a 1) y porcentaje (0 a 100)
+      factores = [v if v <= 1.0 else v / 100.0 for v in valores_pct]
+      porcentajes = [f * 100 for f in factores]
+
+      df_curva_detalle = pd.DataFrame({
+          "Semana de Cosecha": cols_sem,
+          "Factor Proporcional (Ej. 0.23)": [
+              f"{f:.4f}" if f > 0 else "0.0000" for f in factores
+          ],
+          "Porcentaje (%)": [f"{p:.2f}%" for p in porcentajes],
+          "Valor Numérico %": porcentajes,
+      })
+
+      # Filtrar solo semanas con producción activa (> 0)
+      df_curva_activa = df_curva_detalle[
+          df_curva_detalle["Valor Numérico %"] > 0
+      ]
+
+      col_c1, col_c2 = st.columns([1, 1])
+
+      with col_c1:
+        st.markdown(
+            "**Distribución detallada por semana de cosecha:**"
+        )
+        st.dataframe(
+            df_curva_activa[[
+                "Semana de Cosecha",
+                "Factor Proporcional (Ej. 0.23)",
+                "Porcentaje (%)",
+            ]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+      with col_c2:
+        fig_line = px.line(
+            df_curva_activa,
+            x="Semana de Cosecha",
+            y="Valor Numérico %",
+            markers=True,
+            title=f"Tendencia de Cosecha Semanal - {veg_sel}",
+            text=[f"{v:.1f}%" for v in df_curva_activa["Valor Numérico %"]],
+        )
+        fig_line.update_traces(
+            textposition="top center", line=dict(color="#2E8B57", width=3)
+        )
+        fig_line.update_yaxis(title_text="Porcentaje de Producción (%)")
+        st.plotly_chart(fig_line, use_container_width=True)
+    else:
+      st.info(
+          f"No se encontró curva porcentual detallada para el cultivo:"
+          f" {veg_sel}"
+      )
+
 # -----------------------------------------------------------------------------
-# TAB 2: CURVAS DE DISTRIBUCIÓN PORCENTUAL
+# TAB 2: CURVAS GLOBALES DE PRODUCCIÓN
 # -----------------------------------------------------------------------------
 with tab2:
   st.header(
@@ -221,19 +300,20 @@ with tab2:
         v for v in df_curvas["Vegetal"].dropna().unique() if str(v).strip()
     ])
     veg_curva_sel = st.selectbox(
-        "Selecciona Vegetal para Analizar Curva:", lista_veg_curvas
+        "Selecciona Vegetal para Analizar Curva:",
+        lista_veg_curvas,
+        key="tab2_veg",
     )
 
-    row_c = df_curvas[df_curvas["Vegetal"] == veg_curva_sel]
+    row_c2 = df_curvas[df_curvas["Vegetal"] == veg_curva_sel]
 
-    if not row_c.empty:
+    if not row_c2.empty:
       cols_sem = [
           c
-          for c in row_c.columns
+          for c in row_c2.columns
           if "Semana" in str(c) and "Total" not in str(c)
       ]
-
-      valores_pct = row_c[cols_sem].values[0]
+      valores_pct = row_c2[cols_sem].values[0]
       valores_pct_100 = [v * 100 if v <= 1.0 else v for v in valores_pct]
 
       df_curva_plot = pd.DataFrame(
