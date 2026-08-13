@@ -1,115 +1,71 @@
-import os
-import numpy as np
+import streamlit as st
 import pandas as pd
 import plotly.express as px
-import streamlit as st
+import numpy as np
 
-# 1. Configuración de la Aplicación
-st.set_page_config(
-    page_title="CropPlanner - Análisis de Ciclos y Curvas",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# Configuración de página
+st.set_page_config(page_title="CropPlanner Pro", layout="wide")
 
-st.title("🌾 CropPlanner: Análisis Detallado del Ciclo por Vegetal")
-st.markdown("Comparativa exacta del comportamiento real semana a semana (Histórico vs Actual).")
+st.title("🌾 CropPlanner: Modelo de Análisis y Proyección de Rendimiento")
 
-# Rutas de archivos
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ARCHIVO_MAESTRO = os.path.join(BASE_DIR, "Analisis final.xlsx")
-ARCHIVO_NUEVOS_DATOS = os.path.join(BASE_DIR, "registros_nuevos_cosecha.csv")
-
-# 2. Carga y Procesamiento de Datos
 @st.cache_data
-def cargar_datos():
-    if not os.path.exists(ARCHIVO_MAESTRO):
-        return pd.DataFrame()
+def load_data():
+    df = pd.read_excel('Analisis final.xlsx')
+    # Extraer Tabla 6 (datos base)
+    df_base = df.iloc[1:, 1:14].copy()
+    df_base.columns = ['Finca', 'Lote', 'Area', 'Ciclo', 'Codigo', 'Vegetal', 'Referencia', 'Cantidad_V', 'Dur_SC', 'Kilos', 'Semana', 'Anio', 'Mes']
     
-    df_raw = pd.read_excel(ARCHIVO_MAESTRO, sheet_name="Hoja1")
-    df_t6 = df_raw.iloc[1:, 1:14].copy()
-    df_t6.columns = ["Finca", "Lote", "Area", "Ciclo", "Codigo", "Vegetal", "Referencia", "Cantidad_V", "Dur_SC", "Kilos", "Semana", "Anio", "Mes"]
+    # Limpieza
+    for col in ['Area', 'Ciclo', 'Codigo', 'Cantidad_V', 'Dur_SC', 'Kilos', 'Semana', 'Anio']:
+        df_base[col] = pd.to_numeric(df_base[col], errors='coerce')
     
-    for col in ["Area", "Ciclo", "Codigo", "Cantidad_V", "Dur_SC", "Kilos", "Semana", "Anio"]:
-        df_t6[col] = pd.to_numeric(df_t6[col], errors="coerce")
+    df_base['Periodo'] = df_base['Anio'].apply(lambda x: 'Actual (2025-2026)' if x >= 2025 else 'Historico (<2025)')
     
-    df_t6 = df_t6.dropna(subset=["Vegetal", "Ciclo", "Kilos"])
-    df_t6["Periodo"] = df_t6["Anio"].apply(lambda x: "Actual (2025-2026)" if x >= 2025 else "Histórico (<2025)")
-    return df_t6
+    # Lógica de curva real
+    df_base = df_base.sort_values(['Vegetal', 'Finca', 'Lote', 'Ciclo', 'Codigo'])
+    df_base['Semana_Rel'] = df_base.groupby(['Vegetal', 'Finca', 'Lote', 'Ciclo']).cumcount() + 1
+    df_base['Total_Ciclo'] = df_base.groupby(['Vegetal', 'Finca', 'Lote', 'Ciclo'])['Kilos'].transform('sum')
+    df_base['Pct_Semanal'] = (df_base['Kilos'] / df_base['Total_Ciclo']) * 100
+    return df_base
 
-df_base = cargar_datos()
+df_data = load_data()
 
-# Incorporar nuevos registros si existen
-if os.path.exists(ARCHIVO_NUEVOS_DATOS):
-    df_nuevos = pd.read_csv(ARCHIVO_NUEVOS_DATOS)
-    if not df_nuevos.empty:
-        df_base = pd.concat([df_base, df_nuevos], ignore_index=True)
+# Sidebar: Filtros
+st.sidebar.header("Filtros de Análisis")
+vegetales_disponibles = sorted(df_data['Vegetal'].dropna().unique())
+sel_vegetales = st.sidebar.multiselect("Seleccionar Vegetales:", vegetales_disponibles, default=vegetales_disponibles[:1])
 
-if df_base.empty:
-    st.error("❌ No se encontraron datos para procesar en el archivo maestro.")
-    st.stop()
+# Filtrado de datos
+df_filtered = df_data[df_data['Vegetal'].isin(sel_vegetales)]
 
-# 3. Interfaz de Pestañas
-tab1, tab2, tab3 = st.tabs(["📊 Matriz de Comportamiento Real", "📈 Curvas Dinámicas", "🚀 Planificador"])
+# Pestañas de Análisis
+tab1, tab2 = st.tabs(["📊 Matriz de Curvas (Real)", "📈 Análisis de Proyección"])
 
 with tab1:
-    st.header("📊 Comportamiento Real de Cosecha por Semana (Ciclo por Ciclo)")
-    st.markdown("""
-    Esta matriz analiza **cada ciclo de manera independiente** para calcular qué porcentaje real de la cosecha 
-    se obtiene en la Semana 1, Semana 2, Semana 3, etc., agrupado por **Vegetal** y separado por **Periodo**.
-    """)
-
-    # Cálculo de la semana relativa dentro de cada ciclo individual
-    df_v = df_base.copy()
-    df_v = df_v.sort_values(["Vegetal", "Finca", "Lote", "Ciclo", "Anio", "Semana"])
-    df_v["Sem_Rel"] = df_v.groupby(["Vegetal", "Finca", "Lote", "Ciclo"]).cumcount() + 1
+    st.subheader("Distribución Porcentual Real (%) por Semana")
     
-    # Normalizar: calcular el porcentaje de cada semana respecto al total de su propio ciclo
-    tot_ciclo = df_v.groupby(["Vegetal", "Finca", "Lote", "Ciclo"])["Kilos"].transform("sum")
-    df_v["Pct"] = (df_v["Kilos"] / tot_ciclo) * 100
+    # Pivotar matriz
+    matriz = df_filtered.groupby(['Vegetal', 'Periodo', 'Semana_Rel'])['Pct_Semanal'].mean().unstack(fill_value=0)
     
-    # Agrupar el promedio por Vegetal, Periodo y Semana Relativa
-    matriz_base = df_v.groupby(["Vegetal", "Periodo", "Sem_Rel"])["Pct"].mean().reset_index()
+    # Formatear tabla
+    st.dataframe(matriz.style.format("{:.2f}%"), use_container_width=True)
     
-    # Pivotar para que las semanas sean columnas (Semana 1, Semana 2...)
-    pivot_matriz = matriz_base.pivot(index=["Vegetal", "Periodo"], columns="Sem_Rel", values="Pct").fillna(0)
-    
-    # Limitar o asegurar hasta un número razonable de columnas de semanas (ej. hasta la semana 10 o max disponible)
-    # Renombrar columnas a formato "Semana X"
-    pivot_matriz.columns = [f"Semana {c}" for c in pivot_matriz.columns]
-    
-    # Calcular la columna de Total % para verificar que sumen ~100%
-    pivot_matriz["Total %"] = pivot_matriz.sum(axis=1)
-    
-    # Formatear todos los valores a porcentaje con 2 decimales
-    pivot_display = pivot_matriz.reset_index()
-    for col in pivot_display.columns:
-        if col not in ["Vegetal", "Periodo"]:
-            pivot_display[col] = pivot_display[col].apply(lambda x: f"{x:.2f}%")
-
-    # Mostrar la tabla completa estilo matriz
-    st.dataframe(pivot_display, use_container_width=True, hide_index=True)
-
-    # Gráfica global o por selección al final
     st.markdown("---")
-    st.subheader("📈 Gráfica de Tendencia por Vegetal")
-    veg_grafica = st.selectbox("Seleccione Vegetal para visualizar su curva:", sorted(df_base["Vegetal"].dropna().unique()))
+    st.subheader("Gráfica Comparativa: Curva Histórica vs Actual")
     
-    df_graf = matriz_base[matriz_base["Vegetal"] == veg_grafica]
-    fig_c = px.line(
-        df_graf, 
-        x="Sem_Rel", 
-        y="Pct", 
-        color="Periodo", 
-        markers=True, 
-        labels={"Sem_Rel": "Semana de Cosecha", "Pct": "Porcentaje del Total (%)"},
-        title=f"Evolución real del ciclo: {veg_grafica}"
-    )
-    st.plotly_chart(fig_c, use_container_width=True)
+    # Reestructurar para graficar
+    df_plot = df_filtered.groupby(['Vegetal', 'Periodo', 'Semana_Rel'])['Pct_Semanal'].mean().reset_index()
+    fig = px.line(df_plot, x='Semana_Rel', y='Pct_Semanal', color='Periodo', 
+                  facet_col='Vegetal', markers=True, 
+                  labels={'Semana_Rel': 'Semana de Cosecha', 'Pct_Semanal': 'Distribución (%)'},
+                  title="Evolución de la Curva de Producción")
+    st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
-    st.header("📈 Curvas Dinámicas")
-    st.write("Análisis general de rendimiento por hectárea.")
-
-with tab3:
-    st.header("🚀 Planificador de Siembras")
-    st.info("Módulo de pronóstico de cosechas futuras.")
+    st.header("Modelo de Proyección")
+    st.write("Aquí puedes implementar tu lógica de rendimiento (Kilos/Hectárea).")
+    
+    # Ejemplo de cálculo de rendimiento real
+    rendimiento = df_filtered.groupby(['Vegetal', 'Periodo'])['Kilos'].sum().reset_index()
+    st.table(rendimiento)
+    st.info("Para las futuras planificaciones, utiliza la 'Curva Actual' proyectando los Kilos/Hectárea esperados multiplicados por el % de la curva.")
