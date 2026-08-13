@@ -151,11 +151,16 @@ tab1, tab2, tab3 = st.tabs([
 ])
 
 # -----------------------------------------------------------------------------
-# TAB 1: COMPORTAMIENTO Y CURVA POR CULTIVO
+# TAB 1: COMPORTAMIENTO Y CURVA POR CULTIVO (CON AJUSTE HISTÓRICO VS ACTUAL)
 # -----------------------------------------------------------------------------
 with tab1:
   st.header(
-      "📊 Comportamiento, Duración y Curva Porcentual Semanal por Cultivo"
+      "📊 Comportamiento, Duración y Curvas Porcentuales (Actual vs Histórico)"
+  )
+  st.markdown(
+      "> *Nota agronómica:* Permite contrastar cómo los cultivos han extendido"
+      " su ventana de cosecha real (ej. Brócoli pasando de 4 a 6-7 semanas"
+      " recientes)."
   )
 
   if not df_comp.empty and "Vegetal" in df_comp.columns:
@@ -188,7 +193,7 @@ with tab1:
         }])
         df_v = pd.concat([df_v, filas_nuevas], ignore_index=True)
 
-    st.subheader(f"📋 Resumen de Desempeño Histórico y Actual: {veg_sel}")
+    st.subheader(f"📋 Resumen de Desempeño y Duración Real: {veg_sel}")
     st.dataframe(
         df_v[[
             "Periodo",
@@ -213,9 +218,9 @@ with tab1:
 
     st.markdown("---")
 
-    # 2. Bloque de Comportamiento Integrado (Periodo + Semana 1, Semana 2, etc.)
+    # 2. Desglose detallado por Periodo y Semana de Cosecha
     st.subheader(
-        f"📉 Curva Porcentual Desglosada por Semana de Cosecha ({veg_sel})"
+        f"📉 Curva Porcentual de Cosecha Cruzada por Periodo ({veg_sel})"
     )
 
     row_c = df_curvas[df_curvas["Vegetal"] == veg_sel]
@@ -235,26 +240,28 @@ with tab1:
       factores = [v if v <= 1.0 else v / 100.0 for v in valores_pct]
       porcentajes = [f * 100 for f in factores]
 
-      # Construir un DataFrame donde cada fila sea un periodo (Actual y Histórico)
-      # compartiendo la curva de distribución porcentual semanal por cultivo
       data_combinada = []
       for idx, row in df_v.iterrows():
         periodo_val = row["Periodo"]
-        reg = {"Periodo": periodo_val}
+        duracion_real = row["Duracion_Promedio"]
+        reg = {
+            "Periodo": periodo_val,
+            "Duración Prom. (Semanas)": duracion_real,
+        }
         for s_col, p_val in zip(cols_sem, porcentajes):
-          if p_val > 0:  # Solo incluir semanas activas
+          if p_val > 0:
             reg[f"{s_col} (%)"] = f"{p_val:.2f}%"
         data_combinada.append(reg)
 
       df_integrado = pd.DataFrame(data_combinada)
 
       st.markdown(
-          "**Vista cruzada por Periodo (`Actual (2025-2026)` / `Histórico"
-          " (<2025)`) y el porcentaje por semana de producción:**"
+          "**Tabla de Distribución Semanal Asociada al Periodo y Duración"
+          " Real:**"
       )
       st.dataframe(df_integrado, use_container_width=True, hide_index=True)
 
-      # Gráfica de línea detallada
+      # Gráfica de línea de la curva
       df_curva_detalle = pd.DataFrame({
           "Semana de Cosecha": cols_sem,
           "Valor Numérico %": porcentajes,
@@ -268,7 +275,10 @@ with tab1:
           x="Semana de Cosecha",
           y="Valor Numérico %",
           markers=True,
-          title=f"Tendencia Porcentual de Cosecha Semanal - {veg_sel}",
+          title=(
+              f"Comportamiento de Curva Semanal ({veg_sel}) - Ventana de"
+              f" Producción"
+          ),
           text=[f"{v:.1f}%" for v in df_curva_activa["Valor Numérico %"]],
       )
       fig_line.update_traces(
@@ -377,7 +387,7 @@ with tab3:
             df_curvas["Vegetal"].str.contains(veg_sim, case=False, na=False)
         ]
 
-      if not row_curva.rows_empty if hasattr(row_curva, 'rows_empty') else not row_curva.empty:
+      if not row_curva.empty:
         cols_sem = [
             c
             for c in row_curva.columns
