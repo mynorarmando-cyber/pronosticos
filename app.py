@@ -26,7 +26,9 @@ def weighted_quantile(values, quantile, weights=None):
     return float(np.interp(quantile, cum, v))
 
 def recency_weight(year, max_year):
-    age = max_year - year
+    if pd.isna(year):
+        return 0.20
+    age = max_year - int(year)
     if age <= 2:
         return 0.50
     if age <= 4:
@@ -42,27 +44,16 @@ def normalize_reference(s):
     })
 
 def read_excel_data(file):
-    # Identificar las hojas disponibles de forma segura
-    xls = pd.ExcelFile(file)
-    sheets = xls.sheet_names
-    
-    # Buscar la hoja 'Cosecha Real' o una alternativa similar sin distinguir mayúsculas
-    target_sheet = None
-    for sh in sheets:
-        sh_clean = sh.strip().lower()
-        if "cosecha" in sh_clean and "real" in sh_clean:
-            target_sheet = sh
+    xl = pd.ExcelFile(file)
+    sheet_to_use = None
+    for name in xl.sheet_names:
+        if "cosecha" in name.lower():
+            sheet_to_use = name
             break
-    if not target_sheet:
-        # Si no encuentra coincidencia exacta, toma la que contenga 'cosecha' o la última/primera disponible
-        for sh in sheets:
-            if "cosecha" in sh.lower():
-                target_sheet = sh
-                break
-    if not target_sheet:
-        target_sheet = sheets[0] # Respaldo por defecto
-
-    raw_full = pd.read_excel(file, sheet_name=target_sheet, header=None)
+    if not sheet_to_use:
+        sheet_to_use = xl.sheet_names[-1]
+        
+    raw_full = pd.read_excel(xl, sheet_name=sheet_to_use, header=None)
     
     left = raw_full.iloc[:, 1:14].copy()
     left.columns = [
@@ -70,7 +61,6 @@ def read_excel_data(file):
         "CantidadV","DuracionSC","Kilos","Semana","Año","Mes"
     ]
     
-    # Limpiar filas vacías y la fila de cabecera repetida
     left = left.dropna(subset=["Finca"]).copy()
     left = left[left["Finca"] != "Finca"].copy()
     
@@ -95,13 +85,12 @@ def prepare_model(t6):
         
     d["AreaEfectiva"] = d["Area"] / d["CantidadV"]
     
-    # Conversión segura a Int64 para evitar errores con nulos
+    # Uso seguro de Int64 para evitar el error de non-finite values
     d["Semana"] = pd.to_numeric(d["Semana"], errors="coerce").astype("Int64")
     d["Año"] = pd.to_numeric(d["Año"], errors="coerce").astype("Int64")
 
     d = d.dropna(subset=["Semana", "Año"])
     
-    # Fecha de lunes de la semana ISO
     d["SemanaInicio"] = pd.to_datetime(
         d["Año"].astype(str) + "-W" + d["Semana"].astype(str).str.zfill(2) + "-1",
         format="%G-W%V-%u",
@@ -121,22 +110,24 @@ def prepare_model(t6):
         )
         .reset_index()
     )
-    cycles["DuracionReal"] = (
-        ((cycles["UltimaCosecha"] - cycles["PrimeraCosecha"]).dt.days / 7) + 1
-    ).round().astype(int)
+    
+    # Cálculo seguro de duración evitando errores con nulos
+    dur_days = (cycles["UltimaCosecha"] - cycles["PrimeraCosecha"]).dt.days
+    cycles["DuracionReal"] = np.where(dur_days.notna(), ((dur_days / 7) + 1).round().astype("Int64"), 1)
+    
     cycles["Rendimiento"] = cycles["TotalKilos"] / cycles["Area"].replace(0, np.nan)
 
     d = d.merge(
         cycles[keys + ["PrimeraCosecha","DuracionReal","Rendimiento"]],
         on=keys, how="left", suffixes=("","_c")
     )
-    d["SemanaRelativa"] = (
-        ((d["SemanaInicio"] - d["PrimeraCosecha"]).dt.days / 7) + 1
-    ).round().astype(int)
+    
+    rel_days = (d["SemanaInicio"] - d["PrimeraCosecha"]).dt.days
+    d["SemanaRelativa"] = np.where(rel_days.notna(), ((rel_days / 7) + 1).round().astype("Int64"), 1)
 
-    max_year = int(d["Año"].max())
-    cycles["PesoRecencia"] = cycles["AñoCosecha"].apply(lambda y: recency_weight(int(y), max_year))
-    cycles["Periodo"] = cycles["AñoCosecha"].apply(lambda y: "2025 y 2026" if int(y) >= 2025 else "<25")
+    max_year = int(d["Año"].max()) if not d["Año"].dropna().empty else 2026
+    cycles["PesoRecencia"] = cycles["AñoCosecha"].apply(lambda y: recency_weight(y, max_year))
+    cycles["Periodo"] = cycles["AñoCosecha"].apply(lambda y: "2025 y 2026" if pd.notna(y) and int(y) >= 2025 else "<25")
 
     return d, cycles
 
@@ -163,7 +154,7 @@ def build_curve_comparative(d, vegetable):
     if x.empty:
         return pd.DataFrame()
     
-    x["Periodo"] = x["Año"].apply(lambda y: "2025 y 2026" if int(y) >= 2025 else "<25")
+    x["Periodo"] = x["Año"].apply(lambda y: "2025 y 2026" if pd.notna(y) and int(y) >= 2025 else "<25")
     
     cyc = (
         x.groupby(["Periodo","Finca","Lote","Ciclo","Referencia","SemanaRelativa"], as_index=False)
@@ -179,6 +170,9 @@ def build_curve_comparative(d, vegetable):
             out_periods.append({"Periodo": periodo, "SemanaRelativa": int(sw), "Porcentaje": med})
     df_p = pd.DataFrame(out_periods)
     
+    if df_p.empty:
+        return pd.DataFrame()
+        
     pivot = df_p.pivot(index="SemanaRelativa", columns="Periodo", values="Porcentaje").reset_index()
     if "<25" not in pivot.columns:
         pivot["<25"] = 0.0
@@ -203,15 +197,15 @@ def seasonality(d, vegetable):
          .agg(Kilos=("Kilos","sum"), Area=("AreaEfectiva","first"))
     )
     weekly["KgHa"] = weekly["Kilos"] / weekly["Area"].replace(0, np.nan)
-    max_year = int(x["Año"].max())
-    weekly["Peso"] = weekly["Año"].apply(lambda y: recency_weight(int(y), max_year))
-    base = np.average(weekly["KgHa"].dropna(), weights=weekly.loc[weekly["KgHa"].notna(),"Peso"])
+    max_year = int(x["Año"].max()) if not x["Año"].dropna().empty else 2026
+    weekly["Peso"] = weekly["Año"].apply(lambda y: recency_weight(y, max_year))
+    base = np.average(weekly["KgHa"].dropna(), weights=weekly.loc[weekly["KgHa"].notna(),"Peso"]) if weekly["KgHa"].notna().any() else 1.0
     rows = []
     for wk, g in weekly.groupby("Semana"):
         m = np.average(g["KgHa"].dropna(), weights=g.loc[g["KgHa"].notna(),"Peso"]) if g["KgHa"].notna().any() else np.nan
-        rows.append((int(wk), m / base if base else 1))
+        rows.append((int(wk), m / base if base and not np.isnan(base) else 1.0))
     out = pd.DataFrame(rows, columns=["Semana","FactorEstacional"]).sort_values("Semana")
-    out["FactorEstacional"] = out["FactorEstacional"].rolling(5, center=True, min_periods=1).mean()
+    out["FactorEstacional"] = out["FactorEstacional"].rolling(5, center=True, min_periods=1).mean().fillna(1.0)
     return out
 
 def forecast(cycles, d, vegetable, area, first_harvest, scenario):
@@ -238,7 +232,7 @@ def forecast(cycles, d, vegetable, area, first_harvest, scenario):
         harvest_date = first_harvest + timedelta(weeks=rel-1)
         iso = harvest_date.isocalendar()
         sw = int(iso.week)
-        sf = float(seas.loc[seas["Semana"] == sw, "FactorEstacional"].iloc[0]) if (seas["Semana"] == sw).any() else 1.0
+        sf = float(seas.loc[seas["Semana"] == sw, "FactorEstacional"].iloc[0]) if not seas.empty and (seas["Semana"] == sw).any() else 1.0
         rows.append({
             "Semana relativa": rel,
             "Fecha": harvest_date,
@@ -390,7 +384,7 @@ with tabs[3]:
 
     veg_plan = st.selectbox("Vegetal a Programar", vegetables, key="plan_veg")
     rend_plan = st.number_input("Rendimiento Plan (kg/ha)", min_value=100.0, value=10900.0, step=500.0)
-    siembra_date = st.date_input("Fecha de Siembra / Inicio Cosecha", value=date.today())
+    siembra_date = st.date_input("Fecha de Siembra / Inicio Cosecha", value=date.today(), key="plan_siembra_date")
 
     curve_p = build_curve_comparative(data, veg_plan)
     if not curve_p.empty:
