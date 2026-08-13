@@ -8,7 +8,7 @@ import plotly.express as px
 st.set_page_config(page_title="AgroForecast | Pronóstico agrícola", layout="wide")
 
 # ------------------------------------------------------------
-# Utilidades y Funciones de Procesamiento
+# Utilidades
 # ------------------------------------------------------------
 def clean_name(x):
     return str(x).strip() if pd.notna(x) else ""
@@ -38,7 +38,7 @@ def recency_weight(year, max_year):
 
 def normalize_reference(s):
     s = s.astype(str).str.strip()
-    # Unificación de Fino y Extrafino
+    # Unificar Fino y Extrafino tal como lo especificaste
     return s.replace({
         "Extrafino": "Fino",
         "EXTRAFINO": "Fino",
@@ -48,7 +48,7 @@ def normalize_reference(s):
 def read_excel(file):
     raw = pd.read_excel(file, sheet_name=0, header=None)
 
-    # Tabla 6: encabezados en la primera hoja útil
+    # Tabla 6: encabezados en la primera fila útil.
     left = raw.iloc[:, 1:14].copy()
     left.columns = [
         "Finca","Lote","Area","Ciclo","Codigo","Vegetal","Referencia",
@@ -60,7 +60,7 @@ def read_excel(file):
         left[c] = pd.to_numeric(left[c], errors="coerce")
     left = left.dropna(subset=["Kilos","Semana","Año","Area"])
 
-    # Tabla 10 complementaria
+    # Tabla 10, si está disponible.
     right = raw.iloc[:, 15:26].copy()
     right.columns = [
         "Finca","Lote","Area","Ciclo","Vegetal","Referencia","CantidadV",
@@ -87,6 +87,7 @@ def prepare_model(t6):
         errors="coerce"
     )
 
+    # Un ciclo + vegetal + finca + lote
     keys = ["Finca","Lote","Ciclo","Referencia"]
     cycles = (
         d.groupby(keys, dropna=False)
@@ -252,23 +253,23 @@ st.caption("Modelo estadístico agrícola basado en ciclos reales, curvas de cos
 
 with st.sidebar:
     st.header("Datos")
-    uploaded = st.file_uploader("Cargar otro archivo Excel (Opcional)", type=["xlsx","xls"])
-    st.markdown("**Nota:** Si tienes `Analisis final.xlsx` en la misma carpeta, se cargará automáticamente.")
+    uploaded = st.file_uploader("Carga tu archivo Excel", type=["xlsx","xls"])
+    st.markdown("**Estructura esperada:** Tabla 6 en las primeras 13 columnas y Tabla 10 en las siguientes 11.")
     st.divider()
     st.header("Reglas del modelo")
-    st.write("• Fino + Extrafino → Fino")
-    st.write("• Área efectiva = Área / Cantidad V")
-    st.write("• Curva por semana relativa")
-    st.write("• Ponderación de recencia: 50% / 30% / 20%")
+    st.write("• Fino + Extrafino → Fino[cite: 1]")
+    st.write("• Área efectiva = Área / Cantidad V[cite: 1]")
+    st.write("• Curva por semana relativa[cite: 1]")
+    st.write("• Ponderación de recencia: 50% / 30% / 20%[cite: 1]")
 
-# Selección de fuente de datos (Automática si existe el archivo local)
+# Carga automática por defecto si el archivo está en la misma carpeta
 source = uploaded if uploaded is not None else "Analisis final.xlsx"
 
 try:
     t6, t10 = read_excel(source)
     data, cycles = prepare_model(t6)
 except Exception as e:
-    st.error("No se encontró el archivo 'Analisis final.xlsx' en la carpeta. Por favor súbelo usando el botón de la barra lateral.")
+    st.info("Por favor, carga tu archivo 'Analisis final.xlsx' usando el botón de la barra lateral para iniciar el análisis.")
     st.stop()
 
 vegetables = sorted(data["Referencia"].dropna().unique().tolist())
