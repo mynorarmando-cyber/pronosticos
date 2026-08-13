@@ -220,7 +220,6 @@ with tab1:
 
     row_c = df_curvas[df_curvas["Vegetal"] == veg_sel]
     if row_c.empty:
-      # Búsqueda flexible si el nombre varía ligeramente (ej. Extrafino/Fino)
       row_c = df_curvas[
           df_curvas["Vegetal"].str.contains(veg_sel, case=False, na=False)
       ]
@@ -233,7 +232,6 @@ with tab1:
       ]
       valores_pct = row_c[cols_sem].values[0]
 
-      # Normalizar a factor (0 a 1) y porcentaje (0 a 100)
       factores = [v if v <= 1.0 else v / 100.0 for v in valores_pct]
       porcentajes = [f * 100 for f in factores]
 
@@ -246,7 +244,6 @@ with tab1:
           "Valor Numérico %": porcentajes,
       })
 
-      # Filtrar solo semanas con producción activa (> 0)
       df_curva_activa = df_curva_detalle[
           df_curva_detalle["Valor Numérico %"] > 0
       ]
@@ -279,7 +276,9 @@ with tab1:
         fig_line.update_traces(
             textposition="top center", line=dict(color="#2E8B57", width=3)
         )
-        fig_line.update_yaxis(title_text="Porcentaje de Producción (%)")
+        fig_line.update_yaxes(
+            title_text="Porcentaje de Producción (%)"
+        )  # Corregido a update_yaxes
         st.plotly_chart(fig_line, use_container_width=True)
     else:
       st.info(
