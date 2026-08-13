@@ -5,8 +5,9 @@ from agronomic_forecast_engine_3 import AgronomicForecastEngine
 
 st.set_page_config(
     page_title="CropPlanner - Motor de Pronóstico Agrícola",
-    page_layout="wide",
+    layout="wide",
     initial_sidebar_state="expanded"
+
 )
 
 st.title("🌾 CropPlanner: Sistema de Proyección de Harvest Curves")
