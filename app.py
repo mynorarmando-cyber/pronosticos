@@ -6,13 +6,13 @@ import streamlit as st
 
 # 1. Configuración de la Aplicación
 st.set_page_config(
-    page_title="CropPlanner - Análisis Profesional de Cosechas",
+    page_title="CropPlanner - Análisis de Ciclos y Curvas",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("🌾 CropPlanner: Sistema de Análisis de Cosechas")
-st.markdown("Comparativa de comportamiento real entre periodos Históricos y Actuales.")
+st.title("🌾 CropPlanner: Análisis Detallado del Ciclo por Vegetal")
+st.markdown("Comparativa exacta del comportamiento real semana a semana (Histórico vs Actual).")
 
 # Rutas de archivos
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,7 +26,6 @@ def cargar_datos():
         return pd.DataFrame()
     
     df_raw = pd.read_excel(ARCHIVO_MAESTRO, sheet_name="Hoja1")
-    # Ajuste de columnas basado en estructura del archivo maestro
     df_t6 = df_raw.iloc[1:, 1:14].copy()
     df_t6.columns = ["Finca", "Lote", "Area", "Ciclo", "Codigo", "Vegetal", "Referencia", "Cantidad_V", "Dur_SC", "Kilos", "Semana", "Anio", "Mes"]
     
@@ -39,69 +38,78 @@ def cargar_datos():
 
 df_base = cargar_datos()
 
-# 3. Interfaz Principal
-tab1, tab2, tab3 = st.tabs(["📊 Diagnóstico y Tabla Comparativa", "📈 Curvas Dinámicas", "🚀 Planificador"])
+# Incorporar nuevos registros si existen
+if os.path.exists(ARCHIVO_NUEVOS_DATOS):
+    df_nuevos = pd.read_csv(ARCHIVO_NUEVOS_DATOS)
+    if not df_nuevos.empty:
+        df_base = pd.concat([df_base, df_nuevos], ignore_index=True)
+
+if df_base.empty:
+    st.error("❌ No se encontraron datos para procesar en el archivo maestro.")
+    st.stop()
+
+# 3. Interfaz de Pestañas
+tab1, tab2, tab3 = st.tabs(["📊 Matriz de Comportamiento Real", "📈 Curvas Dinámicas", "🚀 Planificador"])
 
 with tab1:
-    st.header("📊 Comparativa de Comportamiento Real: Histórico vs Actual")
-    veg_sel = st.selectbox("Seleccione el Vegetal a comparar:", sorted(df_base["Vegetal"].dropna().unique()))
-    
-    # A. Resumen General
-    st.subheader("1. Resumen de Ciclos")
-    resumen = df_base[df_base["Vegetal"] == veg_sel].groupby("Periodo").agg({
-        "Dur_SC": "mean", 
-        "Kilos": "sum"
-    }).reset_index().rename(columns={"Dur_SC": "Duración Prom. (Sem)", "Kilos": "Total Kilos"})
-    st.dataframe(resumen, use_container_width=True, hide_index=True)
+    st.header("📊 Comportamiento Real de Cosecha por Semana (Ciclo por Ciclo)")
+    st.markdown("""
+    Esta matriz analiza **cada ciclo de manera independiente** para calcular qué porcentaje real de la cosecha 
+    se obtiene en la Semana 1, Semana 2, Semana 3, etc., agrupado por **Vegetal** y separado por **Periodo**.
+    """)
 
-    # B. Tabla Detallada por Semana (El corazón de la comparativa)
-    st.subheader(f"2. Distribución Semanal Real (%) - {veg_sel}")
+    # Cálculo de la semana relativa dentro de cada ciclo individual
+    df_v = df_base.copy()
+    df_v = df_v.sort_values(["Vegetal", "Finca", "Lote", "Ciclo", "Anio", "Semana"])
+    df_v["Sem_Rel"] = df_v.groupby(["Vegetal", "Finca", "Lote", "Ciclo"]).cumcount() + 1
     
-    # Lógica de cálculo de semana relativa
-    df_v = df_base[df_base["Vegetal"] == veg_sel].copy()
-    df_v = df_v.sort_values(["Finca", "Lote", "Ciclo", "Anio", "Semana"])
-    df_v["Sem_Rel"] = df_v.groupby(["Finca", "Lote", "Ciclo"]).cumcount() + 1
-    
-    # Calcular el porcentaje que aporta cada semana al total de su ciclo
-    tot_ciclo = df_v.groupby(["Finca", "Lote", "Ciclo"])["Kilos"].transform("sum")
+    # Normalizar: calcular el porcentaje de cada semana respecto al total de su propio ciclo
+    tot_ciclo = df_v.groupby(["Vegetal", "Finca", "Lote", "Ciclo"])["Kilos"].transform("sum")
     df_v["Pct"] = (df_v["Kilos"] / tot_ciclo) * 100
     
-    # Agrupación para comparar periodos
-    curva_real = df_v.groupby(["Periodo", "Sem_Rel"])["Pct"].mean().reset_index()
+    # Agrupar el promedio por Vegetal, Periodo y Semana Relativa
+    matriz_base = df_v.groupby(["Vegetal", "Periodo", "Sem_Rel"])["Pct"].mean().reset_index()
     
-    # Pivoteo para formato matricial (como Excel)
-    pivot_tabla = curva_real.pivot(index="Periodo", columns="Sem_Rel", values="Pct").fillna(0)
-    pivot_tabla.columns = [f"Semana {c}" for c in pivot_tabla.columns]
+    # Pivotar para que las semanas sean columnas (Semana 1, Semana 2...)
+    pivot_matriz = matriz_base.pivot(index=["Vegetal", "Periodo"], columns="Sem_Rel", values="Pct").fillna(0)
     
-    # Agregar columna de Total %
-    pivot_tabla["Total %"] = pivot_tabla.sum(axis=1)
+    # Limitar o asegurar hasta un número razonable de columnas de semanas (ej. hasta la semana 10 o max disponible)
+    # Renombrar columnas a formato "Semana X"
+    pivot_matriz.columns = [f"Semana {c}" for c in pivot_matriz.columns]
     
-    # Formateo visual a porcentaje
-    pivot_display = pivot_tabla.reset_index()
+    # Calcular la columna de Total % para verificar que sumen ~100%
+    pivot_matriz["Total %"] = pivot_matriz.sum(axis=1)
+    
+    # Formatear todos los valores a porcentaje con 2 decimales
+    pivot_display = pivot_matriz.reset_index()
     for col in pivot_display.columns:
-        if col not in ["Periodo"]:
+        if col not in ["Vegetal", "Periodo"]:
             pivot_display[col] = pivot_display[col].apply(lambda x: f"{x:.2f}%")
-            
+
+    # Mostrar la tabla completa estilo matriz
     st.dataframe(pivot_display, use_container_width=True, hide_index=True)
 
-    # C. Gráfica Comparativa (Final de la pestaña)
+    # Gráfica global o por selección al final
     st.markdown("---")
-    st.subheader("3. Gráfica de Tendencia")
+    st.subheader("📈 Gráfica de Tendencia por Vegetal")
+    veg_grafica = st.selectbox("Seleccione Vegetal para visualizar su curva:", sorted(df_base["Vegetal"].dropna().unique()))
+    
+    df_graf = matriz_base[matriz_base["Vegetal"] == veg_grafica]
     fig_c = px.line(
-        curva_real, 
+        df_graf, 
         x="Sem_Rel", 
         y="Pct", 
         color="Periodo", 
         markers=True, 
-        labels={"Sem_Rel": "Semana de Cosecha", "Pct": "Distribución (%)"},
-        title=f"Curva de producción: {veg_sel}"
+        labels={"Sem_Rel": "Semana de Cosecha", "Pct": "Porcentaje del Total (%)"},
+        title=f"Evolución real del ciclo: {veg_grafica}"
     )
     st.plotly_chart(fig_c, use_container_width=True)
 
 with tab2:
-    st.header("📈 Análisis de Rendimiento")
-    st.write("Análisis detallado de productividad por lote y finca.")
+    st.header("📈 Curvas Dinámicas")
+    st.write("Análisis general de rendimiento por hectárea.")
 
 with tab3:
     st.header("🚀 Planificador de Siembras")
-    st.info("Utilice los datos de comportamiento real de la pestaña 1 para proyectar próximas cosechas.")
+    st.info("Módulo de pronóstico de cosechas futuras.")
